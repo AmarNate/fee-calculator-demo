@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Merchant Fee Breakdown Calculator</title>
+<!--
+  DEMO BUILD · fictional company (Acme Pay), fictional prices, fictional merchants.
+  Workflow tool sample by Nenad T.
+
+  THE DB · the things that must not drift. The code below reads these.
+-->
+<script>
+  const DB = {
+    company: 'Acme Pay',
+    team: 'Account Management team',
+    idLabel: 'Account ID',
+    portal: 'your processor portal',
+    // every price here is made up for the demo
+    fees: { accelFunding: 15.0, pciMgmt: 8.5, ncLow: 25.0, ncHigh: 35.0, fullSettlementPct: 0.04 },
+    graceDays: 60,
+    // 'label'    = per-item fees stay inside Interchange and the screen says so
+    // 'subtract' = per-item fees are taken out of Interchange and shown as their own line
+    PER_ITEM_MODE: 'subtract', // ruled 16 Nov 2026
+  };
+</script>
+<style>
+  :root {
+    --bg:#04070b; --blue:#8fd6ff; --grn:#b6ff3c; --rec:#ff3d66; --amber:#ffc46b;
+    --ink:#f4f9fd; --dim:#b3c5d6; --mute:#8298ad; --edge:#1c3a4f;
+    --f1:#1b3350; --f2:#101e31; --f3:#0a1422; --well:#060b12;
+    --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'DejaVu Sans Mono', Menlo, Consolas, monospace;
+    --sans: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--ink); font-family:var(--sans); min-height:100vh; }
+  /* the field: mist pockets, traces, grain */
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(60% 40% at 12% 8%, rgba(143,214,255,0.06), transparent 70%),
+      radial-gradient(50% 40% at 88% 70%, rgba(143,214,255,0.04), transparent 70%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cg fill='none' stroke='%238fd6ff' stroke-opacity='0.07'%3E%3Cpath d='M0 40H60L80 60V120H140L160 140H240M120 0V30L140 50H200L220 70V110M40 240V190L60 170H110L130 150M180 240V200L200 180H240'/%3E%3C/g%3E%3Cg fill='%238fd6ff' fill-opacity='0.12'%3E%3Ccircle cx='60' cy='40' r='2'/%3E%3Ccircle cx='140' cy='120' r='2'/%3E%3Ccircle cx='200' cy='50' r='2'/%3E%3Ccircle cx='110' cy='170' r='2'/%3E%3Ccircle cx='200' cy='180' r='2'/%3E%3C/g%3E%3C/svg%3E");
+  }
+  body::after {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:5; opacity:0.055; mix-blend-mode:screen;
+    background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E");
+  }
+  .page { position:relative; z-index:1; max-width:1000px; margin:0 auto; padding:40px 24px 80px; }
+
+  .header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:30px; padding-bottom:24px; border-bottom:1px solid var(--edge); }
+  .header-left { display:flex; gap:18px; align-items:center; }
+  .chip { width:64px; height:64px; flex-shrink:0; border-radius:12px; background:linear-gradient(160deg,#0a1220,#04070b); box-shadow:inset 0 2px 6px rgba(0,0,0,0.8), inset 0 0 0 1px rgba(143,214,255,0.18), 0 1px 0 rgba(143,214,255,0.12); display:grid; place-items:center; }
+  .header-tag { font-family:var(--mono); font-size:11px; color:var(--blue); letter-spacing:0.2em; text-transform:uppercase; margin-bottom:8px; }
+  h1 { font-size:clamp(26px,4vw,38px); font-weight:800; letter-spacing:-0.025em; line-height:1.1; color:var(--ink); }
+  h1 span { color:var(--blue); }
+  .version-badge { font-family:var(--mono); font-size:10px; color:var(--dim); background:var(--well); border:1px solid var(--edge); padding:6px 11px; border-radius:4px; letter-spacing:0.1em; white-space:nowrap; box-shadow:inset 0 1px 3px rgba(0,0,0,0.7); }
+
+  .layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:18px; margin-bottom:18px; }
+  @media(max-width:680px){ .layout{grid-template-columns:minmax(0,1fr);} .header{flex-direction:column;} .page{padding:24px 14px 60px;} }
+
+  /* a plate: bevelled face, two-tone edge, inner bezel, real shadow */
+  .card { position:relative; border-radius:14px; padding:24px 22px 22px; border:1px solid transparent;
+    background:
+      linear-gradient(180deg,var(--f1) 0%,var(--f2) 42%,var(--f3) 100%) padding-box,
+      linear-gradient(135deg,rgba(143,214,255,0.75),rgba(143,214,255,0.22) 55%,rgba(182,255,60,0.6)) border-box;
+    box-shadow:0 14px 30px rgba(0,0,0,0.55), 0 2px 0 rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.07); }
+  .card::before { content:''; position:absolute; inset:5px; border-radius:10px; border:1px solid rgba(143,214,255,0.1); pointer-events:none; }
+  .card.full { grid-column:1/-1; }
+  /* the fissure: a dark split in the plate edge with a lit filament, kept clear of every label */
+  .card.fis::after { content:''; position:absolute; top:-2px; right:30px; width:74px; height:16px; pointer-events:none;
+    background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='74' height='16'%3E%3Cpath d='M0 2H14L22 9L33 4L44 11L58 2H74' fill='none' stroke='%2304070b' stroke-width='5'/%3E%3Cpath d='M0 2H14L22 9L33 4L44 11L58 2H74' fill='none' stroke='%238fd6ff' stroke-opacity='0.55' stroke-width='1.2'/%3E%3Cpath d='M14 2L22 9L33 4L44 11' fill='none' stroke='%23b6ff3c' stroke-width='0.9'/%3E%3Ccircle cx='44' cy='11' r='1.8' fill='%23e9ffc4'/%3E%3C/svg%3E"); }
+
+  .card-label { font-family:var(--mono); font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:var(--blue); margin-bottom:18px; display:flex; align-items:center; gap:9px; }
+  .card-label .dot { width:6px; height:6px; border-radius:50%; background:#e9ffc4; box-shadow:0 0 5px 1px var(--grn), 0 0 12px 3px rgba(143,214,255,0.45); flex-shrink:0; }
+
+  .field { margin-bottom:14px; }
+  .field:last-child { margin-bottom:0; }
+  .field label { display:block; font-size:11px; font-weight:700; color:var(--dim); margin-bottom:6px; letter-spacing:0.05em; text-transform:uppercase; }
+  .input-wrap { position:relative; display:flex; align-items:center; }
+  .input-prefix,.input-suffix { position:absolute; font-family:var(--mono); font-size:13px; color:var(--mute); pointer-events:none; }
+  .input-prefix{left:12px;} .input-suffix{right:12px;}
+  input[type="number"],input[type="text"],select,textarea { width:100%; background:var(--well); border:1px solid var(--edge); border-radius:8px; color:var(--ink); font-family:var(--mono); font-size:14px; padding:10px 12px; outline:none; transition:border-color 0.2s,box-shadow 0.2s; -moz-appearance:textfield; box-shadow:inset 0 2px 5px rgba(0,0,0,0.75); }
+  input::placeholder, textarea::placeholder { color:#5d7186; }
+  input[type="number"]::-webkit-inner-spin-button,input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;}
+  input:focus, select:focus, textarea:focus { border-color:var(--blue); box-shadow:inset 0 2px 5px rgba(0,0,0,0.75), 0 0 0 3px rgba(143,214,255,0.14); }
+  .has-prefix input{padding-left:28px;} .has-suffix input{padding-right:38px;}
+  textarea { font-size:12px; resize:vertical; min-height:70px; }
+  select { cursor:pointer; }
+  .field-hint { font-family:var(--mono); font-size:10.5px; color:var(--mute); margin-top:5px; line-height:1.5; }
+  .section-divider { height:1px; background:linear-gradient(90deg,var(--edge),transparent); margin:8px 0 14px; }
+  .sub-label { font-family:var(--mono); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; color:var(--blue); font-weight:700; }
+  .help { display:inline-flex; align-items:center; justify-content:center; width:17px; height:17px; border-radius:50%; border:1px solid var(--blue); color:var(--blue); font-family:var(--mono); font-size:10px; font-weight:700; cursor:help; flex-shrink:0; }
+
+  .toggle-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 14px; background:var(--well); border:1px solid var(--edge); border-radius:8px; margin-bottom:8px; cursor:pointer; transition:border-color 0.2s,background 0.2s; user-select:none; box-shadow:inset 0 2px 5px rgba(0,0,0,0.6); }
+  .toggle-row:last-child{margin-bottom:0;}
+  .toggle-row:hover{border-color:#2c5674;}
+  .toggle-row.active{border-color:rgba(182,255,60,0.5);background:linear-gradient(180deg,#0b1626,#070d16);}
+  .toggle-label-wrap{display:flex;flex-direction:column;gap:3px;min-width:0;}
+  .toggle-name{font-size:13px;font-weight:700;color:var(--ink);min-width:0;}
+  .toggle-desc{font-family:var(--mono);font-size:10.5px;color:var(--mute);line-height:1.45;}
+  .toggle-right{display:flex;align-items:center;gap:10px;flex-shrink:0;}
+  .toggle-amount{font-family:var(--mono);font-size:13px;color:var(--dim);display:flex;align-items:center;}
+  .toggle-row.active .toggle-amount{color:var(--ink);}
+  .inline-fee-input{background:transparent!important;border:none!important;color:inherit!important;font-family:var(--mono)!important;font-size:13px!important;width:56px!important;outline:none!important;text-align:right;padding:0!important;box-shadow:none!important;}
+  .custom-label{background:transparent!important;border:none!important;border-bottom:1px dashed var(--blue)!important;border-radius:0!important;color:var(--blue)!important;font-family:var(--sans)!important;font-size:13px!important;font-weight:700;width:100%!important;max-width:170px;min-width:0;padding:0!important;box-shadow:none!important;cursor:text;}
+  .switch{width:38px;height:20px;background:#0c1826;border:1px solid var(--edge);border-radius:10px;position:relative;transition:background 0.2s;flex-shrink:0;box-shadow:inset 0 2px 4px rgba(0,0,0,0.8);}
+  .switch::after{content:'';position:absolute;width:12px;height:12px;background:#5d7186;border-radius:50%;top:3px;left:3px;transition:transform 0.2s,background 0.2s,box-shadow 0.2s;}
+  .toggle-row.active .switch::after{transform:translateX(18px);background:#e9ffc4;box-shadow:0 0 5px 1px var(--grn),0 0 12px 3px rgba(143,214,255,0.5);}
+  .tier { font-family:var(--mono); font-size:10px; padding:3px 9px; border-radius:4px; border:1px solid var(--edge); background:transparent; color:var(--mute); cursor:pointer; transition:all 0.15s; }
+  .tier.active-tier { border-color:var(--blue); background:rgba(143,214,255,0.14); color:var(--ink); }
+
+  .btn-row{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap;}
+  .btn{flex:1;min-width:128px;padding:13px 14px;border-radius:9px;cursor:pointer;font-family:var(--sans);font-size:13.5px;font-weight:700;letter-spacing:0.01em;transition:transform 0.08s, box-shadow 0.15s, border-color 0.15s;color:var(--ink);border:1px solid #2c5674;
+    background:linear-gradient(180deg,#1d3857,#0e1b2c);box-shadow:0 6px 14px rgba(0,0,0,0.5),inset 0 1px 0 rgba(255,255,255,0.1);}
+  .btn:hover{border-color:var(--blue);}
+  .btn:active{transform:translateY(2px);background:linear-gradient(180deg,#0e1b2c,#16304b);box-shadow:0 1px 3px rgba(0,0,0,0.6),inset 0 2px 6px rgba(0,0,0,0.7);}
+  .btn-primary{border-color:rgba(182,255,60,0.7);box-shadow:0 6px 14px rgba(0,0,0,0.5),inset 0 1px 0 rgba(255,255,255,0.1),0 0 14px rgba(143,214,255,0.22);}
+  .btn-ghost{color:var(--dim);}
+  .btn.editing{border-color:var(--amber);}
+  #msg { display:none; margin-top:12px; font-family:var(--mono); font-size:12px; color:var(--ink); background:var(--well); border:1px solid var(--amber); border-radius:8px; padding:10px 14px; }
+
+  .results-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+  @media(max-width:680px){.results-grid{grid-template-columns:1fr 1fr;}}
+  .stat-box{background:var(--well);border:1px solid var(--edge);border-radius:10px;padding:16px 12px;text-align:center;box-shadow:inset 0 2px 6px rgba(0,0,0,0.7);}
+  .stat-box.highlight{border-color:rgba(143,214,255,0.6);}
+  .stat-box.savings{border-color:rgba(182,255,60,0.5);}
+  .stat-label{font-family:var(--mono);font-size:10px;letter-spacing:0.13em;text-transform:uppercase;color:var(--dim);margin-bottom:9px;}
+  .stat-label .i{color:var(--blue);cursor:help;}
+  .stat-value{font-family:var(--mono);font-size:22px;font-weight:700;color:var(--ink);letter-spacing:-0.02em;line-height:1;}
+  .stat-value.lead{color:var(--blue);}
+  .stat-value.green{color:var(--grn);}
+  .stat-sub{font-family:var(--mono);font-size:10.5px;color:var(--mute);margin-top:7px;line-height:1.4;}
+
+  .fee-table{width:100%;table-layout:fixed;border-collapse:collapse;font-family:var(--mono);font-size:12px;margin-top:6px;}
+  .fee-table tr{border-bottom:1px solid rgba(28,58,79,0.8);}
+  .fee-table tr:last-child{border-bottom:none;}
+  .fee-table td{padding:9px 4px;color:var(--dim);overflow-wrap:anywhere;line-height:1.45;}
+  .fee-table td:last-child{text-align:right;color:var(--ink);font-weight:700;white-space:nowrap;}
+  .fee-cat td{text-align:left!important;white-space:normal!important;font-size:10px!important;letter-spacing:0.16em;text-transform:uppercase;color:var(--blue)!important;padding-top:16px!important;padding-bottom:4px!important;font-weight:700!important;}
+  .total-row td{color:var(--ink)!important;font-weight:700!important;font-size:13px!important;padding-top:14px!important;border-top:1px solid var(--blue)!important;}
+
+  .scenario{background:var(--well);border:1px solid var(--edge);border-radius:10px;padding:16px;margin-bottom:10px;box-shadow:inset 0 2px 6px rgba(0,0,0,0.7);}
+  .scenario.compliant{border-color:rgba(182,255,60,0.5);}
+  .scenario-total{font-family:var(--mono);font-size:22px;font-weight:700;color:var(--ink);letter-spacing:-0.02em;}
+  .scenario.compliant .scenario-total{color:var(--grn);}
+  .scenario-rate{font-family:var(--mono);font-size:11px;color:var(--mute);margin-top:5px;}
+  .sc-cap{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-bottom:6px;}
+  .sep-label{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:0.15em;text-transform:uppercase;margin:12px 0;}
+  .sep-label::before,.sep-label::after{content:'';flex:1;height:1px;background:var(--edge);}
+  .info-note{display:flex;align-items:flex-start;gap:10px;background:rgba(143,214,255,0.06);border:1px solid rgba(143,214,255,0.22);border-radius:8px;padding:12px 14px;margin-top:14px;font-size:12px;color:var(--dim);line-height:1.65;}
+  .info-note .icon{font-size:14px;flex-shrink:0;margin-top:1px;color:var(--blue);}
+  .info-note strong{color:var(--ink);}
+
+  .trend-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
+  .mini{font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:4px;border:1px solid var(--rec);background:transparent;color:#ff8fa6;cursor:pointer;letter-spacing:0.08em;}
+  #trendTable{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px;min-width:640px;}
+  #trendTable th{text-align:right;font-size:10px;letter-spacing:0.13em;text-transform:uppercase;color:var(--blue);padding:8px 6px;font-weight:700;border-bottom:1px solid var(--blue);}
+  #trendTable th:first-child{text-align:left;}
+  #trendTable td{text-align:right;padding:10px 6px;color:var(--dim);border-bottom:1px solid rgba(28,58,79,0.8);}
+  #trendTable td.m{text-align:left;color:var(--ink);font-weight:700;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px;}
+  #trendTable td.strong{color:var(--ink);font-weight:700;}
+  .chart-well{margin-top:22px;position:relative;height:270px;background:var(--well);border:1px solid var(--edge);border-radius:10px;box-shadow:inset 0 2px 8px rgba(0,0,0,0.8);padding:6px;}
+
+  .empty-state{text-align:center;padding:30px;color:var(--mute);font-family:var(--mono);font-size:12px;line-height:1.7;}
+  .empty-state strong{color:var(--dim);}
+  .print-disclaimer{display:none;}
+
+  /* paper: the merchant's copy is light on purpose */
+  @media print {
+    *{transition:none!important;} body{background:#fff;color:#111;} body::before,body::after{display:none;}
+    .switch{display:none!important;} #resultMerchant{color:#444!important;} .stat-label .i{display:none;}
+    .btn-row,#emptyState,#msg,.version-badge,.header-tag,.field-hint,.toggle-desc,.info-note,.no-print,.chip,.tier:not(.active-tier),.field.notes,.toggle-row:not(.active),.card.fis::after,.card::before{display:none!important;}
+    .card{background:#fff!important;border:1px solid #d5dbe2!important;box-shadow:none!important;border-radius:8px!important;break-inside:avoid;}
+    .header{border-bottom:2px solid #111!important;} h1{color:#111!important;font-size:28px!important;} h1 span{color:#1d5f8a!important;}
+    .card-label,.sub-label,.fee-cat td,#trendTable th{color:#1d5f8a!important;} .card-label .dot{background:#1d5f8a!important;box-shadow:none!important;}
+    .stat-box,.scenario,.toggle-row,.chart-well{background:#f7f9fb!important;border:1px solid #d5dbe2!important;box-shadow:none!important;}
+    .stat-box.savings,.scenario.compliant{background:#eef8ea!important;border-color:#4f8a1d!important;}
+    .stat-label,.sc-cap,.fee-table td,#trendTable td,.field label{color:#444!important;}
+    .stat-value,.scenario-total,.toggle-name,.toggle-amount,.fee-table td:last-child,.total-row td,#trendTable td.m,#trendTable td.strong{color:#111!important;}
+    .stat-value.lead{color:#1d5f8a!important;} .stat-value.green,.scenario.compliant .scenario-total{color:#3d7412!important;}
+    .stat-sub,.scenario-rate,.sep-label{color:#777!important;}
+    input[type="text"],input[type="number"],select{background:transparent!important;border:none!important;border-bottom:1px solid #d5dbe2!important;color:#111!important;box-shadow:none!important;}
+    .tier.active-tier{border-color:#1d5f8a!important;color:#1d5f8a!important;background:#eef5fa!important;}
+    .page{padding:20px!important;} .layout{gap:12px!important;}
+    .print-disclaimer{display:block!important;}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <div class="header-left">
+      <div class="chip" aria-hidden="true">
+        <svg width="46" height="46" viewBox="30 4 90 104"><defs><linearGradient id="pr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a8cff"/><stop offset="0.35" stop-color="#9b5cff"/><stop offset="0.6" stop-color="#d67ac8"/><stop offset="0.82" stop-color="#ffaa46"/><stop offset="1" stop-color="#ffd64a"/></linearGradient><filter id="gl" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter></defs>
+          <path d="M72 14V98 M72 46L55 64L72 82 M72 59L86 48L99 59V98" fill="none" stroke="url(#pr)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" filter="url(#gl)" opacity="0.7"/>
+          <path d="M72 14V98 M72 46L55 64L72 82 M72 59L86 48L99 59V98" fill="none" stroke="url(#pr)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div>
+        <div class="header-tag" id="headerTag"></div>
+        <h1>Merchant Fee<br><span>Breakdown</span> Calculator</h1>
+      </div>
+    </div>
+    <div class="version-badge">v2.0 · DEMO · FICTIONAL DATA</div>
+  </div>
+
+  <!-- shown on paper only -->
+  <div class="print-disclaimer">
+    <div style="border:2px solid #1d5f8a;border-radius:8px;padding:16px 20px;margin-bottom:24px;background:#eef5fa;">
+      <div style="font-size:10px;font-family:monospace;letter-spacing:0.15em;text-transform:uppercase;color:#1d5f8a;font-weight:700;margin-bottom:10px;">Important Notice</div>
+      <ul style="margin:0;padding-left:18px;font-size:12px;color:#333;line-height:1.9;">
+        <li><strong>This is not an official or binding document.</strong> All information provided herein is strictly informational and does not constitute a formal agreement or commitment of any kind.</li>
+        <li><strong>All figures are averages and estimates, not precise calculations.</strong> Card brands, card types, and network categories have been grouped under blended averages. Each individual transaction may vary depending on card type, issuer, and applicable interchange category.</li>
+        <li><strong>Monthly figures represent that period's average only.</strong> Pricing can vary from month to month. The lower the processing volume, the higher the effective rate percentage will appear, as fixed fees remain constant regardless of volume.</li>
+        <li><strong>For official confirmation, please contact the <span class="team-name"></span>.</strong> Any rate decrease resulting from a Rate Review request must be confirmed and approved by the <span class="team-name"></span> before taking effect.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="card fis">
+      <div class="card-label"><span class="dot"></span>Merchant Info</div>
+      <div class="field">
+        <label for="merchantName">Merchant Name / MID</label>
+        <div class="input-wrap"><input type="text" id="merchantName" placeholder="e.g. Harbor Street Bakery · MID 482017"></div>
+      </div>
+      <div class="field">
+        <label for="accountId">Account ID</label>
+        <div class="input-wrap"><input type="text" id="accountId" placeholder="e.g. harborbakery"></div>
+      </div>
+      <div class="field notes">
+        <label for="notes">Notes / Context</label>
+        <textarea id="notes" placeholder="e.g. Non-compliant since March, PCI questionnaire resent 03/14, follow-up call booked..."></textarea>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label"><span class="dot"></span>Processing Volume</div>
+      <div class="field">
+        <label for="monthLabel">Month / Year</label>
+        <div style="display:flex;gap:8px;">
+          <div class="input-wrap" style="flex:2;"><input type="text" id="monthLabel" placeholder="e.g. January"></div>
+          <div class="input-wrap" style="flex:1;">
+            <select id="yearLabel">
+              <option value="2023">2023</option><option value="2024">2024</option><option value="2025">2025</option>
+              <option value="2026">2026</option><option value="2027">2027</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="volume">Monthly Processing Volume ($)</label>
+        <div class="input-wrap has-prefix"><span class="input-prefix">$</span><input type="number" id="volume" placeholder="0.00" min="0" step="100"></div>
+      </div>
+      <div class="field">
+        <label for="txCount">Monthly Transaction Count (#)</label>
+        <div class="input-wrap"><input type="number" id="txCount" placeholder="0" min="0" step="1"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="card">
+      <div class="card-label"><span class="dot"></span>Interchange+ Plan</div>
+      <div class="field">
+        <label for="totalFees">Total Fees ($)</label>
+        <div class="input-wrap has-prefix"><span class="input-prefix">$</span><input type="number" id="totalFees" placeholder="e.g. 412.80" min="0" step="0.01"></div>
+        <div class="field-hint">↳ Flat total from statement: transactional + non-transactional (network &amp; assessment) + processor fee</div>
+      </div>
+      <div class="section-divider"></div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <span class="sub-label">Processor Fixed Rates</span>
+        <span class="help" id="ratesHelp">?</span>
+      </div>
+      <div class="field">
+        <label for="processorFee">Processor Fee (%)</label>
+        <div class="input-wrap has-suffix"><input type="number" id="processorFee" placeholder="e.g. 0.15" min="0" step="0.001"><span class="input-suffix">%</span></div>
+        <div class="field-hint">↳ Verify in <span class="portal-name"></span>. Subtracted to isolate interchange</div>
+      </div>
+      <div class="field">
+        <label for="perItem">Per-Item Fee (per transaction)</label>
+        <div class="input-wrap has-prefix"><span class="input-prefix">$</span><input type="number" id="perItem" placeholder="e.g. 0.10" min="0" step="0.01"></div>
+        <div class="field-hint">↳ Fixed per-transaction charge. Verify in <span class="portal-name"></span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-label"><span class="dot"></span>Fee Breakdown · Components Within Total</div>
+      <div class="toggle-row active" id="toggle-accelFunding" onclick="toggleFee('accelFunding')">
+        <div class="toggle-label-wrap">
+          <span class="toggle-name">Accelerated Monthly Fee</span>
+          <span class="toggle-desc">Next-day funding</span>
+        </div>
+        <div class="toggle-right">
+          <span class="toggle-amount">$<input type="number" id="accelFunding" min="0" step="0.01" onclick="event.stopPropagation()" class="inline-fee-input"></span>
+          <div class="switch"></div>
+        </div>
+      </div>
+      <div class="toggle-row active" id="toggle-pciMgmt" onclick="toggleFee('pciMgmt')">
+        <div class="toggle-label-wrap">
+          <span class="toggle-name">PCI Management Fee</span>
+          <span class="toggle-desc">PCI program monthly fee</span>
+        </div>
+        <div class="toggle-right">
+          <span class="toggle-amount">$<input type="number" id="pciMgmt" min="0" step="0.01" onclick="event.stopPropagation()" class="inline-fee-input"></span>
+          <div class="switch"></div>
+        </div>
+      </div>
+      <div class="toggle-row active" id="toggle-nonCompliance" onclick="toggleFee('nonCompliance')">
+        <div class="toggle-label-wrap">
+          <span class="toggle-name">PCI Non-Compliance Fee</span>
+          <span class="toggle-desc" id="ncDesc"></span>
+          <span style="display:flex;gap:6px;margin-top:5px;" onclick="event.stopPropagation()">
+            <button class="tier active-tier" id="nc-tier-low" onclick="setNcTier('low')"></button>
+            <button class="tier" id="nc-tier-high" onclick="setNcTier('high')"></button>
+          </span>
+        </div>
+        <div class="toggle-right">
+          <span class="toggle-amount">$<input type="number" id="nonCompliance" min="0" step="0.01" onclick="event.stopPropagation()" class="inline-fee-input"></span>
+          <div class="switch"></div>
+        </div>
+      </div>
+      <div class="toggle-row" id="toggle-customFee" onclick="toggleFee('customFee')">
+        <div class="toggle-label-wrap">
+          <span class="toggle-name" style="display:flex;align-items:center;gap:6px;">
+            <input type="text" id="customFeeLabel" class="custom-label" value="Custom Monthly Fee" onclick="event.stopPropagation()" aria-label="Custom fee name">
+            <span style="font-size:11px;font-family:var(--mono);color:var(--mute);font-weight:400;">✎</span>
+          </span>
+          <span class="toggle-desc">Tap label to rename · set any additional fixed monthly charge</span>
+        </div>
+        <div class="toggle-right">
+          <span class="toggle-amount" style="color:var(--blue);">$<input type="number" id="customFee" value="0.00" min="0" step="0.01" onclick="event.stopPropagation()" class="inline-fee-input" style="border-bottom:1px dashed var(--blue)!important;border-radius:0!important;width:60px!important;"></span>
+          <div class="switch"></div>
+        </div>
+      </div>
+      <div class="toggle-row" id="toggle-fullSettlement" onclick="toggleFee('fullSettlement')">
+        <div class="toggle-label-wrap">
+          <span class="toggle-name">Full Settlement Fee</span>
+          <span class="toggle-desc" id="fsDesc"></span>
+        </div>
+        <div class="toggle-right">
+          <span class="toggle-amount" id="fullSettlementDisplay">—</span>
+          <div class="switch"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="btn-row no-print">
+    <button class="btn btn-primary" id="btnCalc" onclick="calculate()">Calculate Breakdown</button>
+    <button class="btn" id="btnSaveMonth" onclick="saveMonth()">+ Save Month</button>
+    <button class="btn" id="btnPdf" onclick="printWithName()">⬇ Export PDF</button>
+    <button class="btn" id="btnDetailed" onclick="exportDetailed()">⬇ Detailed Export</button>
+    <button class="btn btn-ghost" id="btnDemo" onclick="loadDemo()">Load demo data</button>
+    <button class="btn btn-ghost" id="btnReset" onclick="resetAll()">Reset</button>
+  </div>
+  <div id="msg" role="status"></div>
+
+  <div id="results" style="margin-top:20px;display:none;">
+    <div class="card full" style="margin-bottom:18px;">
+      <div class="card-label"><span class="dot"></span>Summary · <span id="resultMerchant" style="color:var(--dim);letter-spacing:0.08em;"></span></div>
+      <div class="results-grid">
+        <div class="stat-box">
+          <div class="stat-label">Interchange &amp; Variable <span class="i" title="Derived by subtracting all known fixed monthly components and the processor fee from the total. It represents transactional + non-transactional (network & assessment) fees: costs that vary with card type, brand and transaction size each month.">ⓘ</span></div>
+          <div class="stat-value lead" id="r-processingCost">—</div>
+          <div class="stat-sub" id="r-interchangeSub">total minus all known components</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Monthly Components <span class="i" title="Fixed recurring monthly fees only: Accelerated Funding, PCI Management, Non-Compliance and any custom monthly charges. Excludes processor % and per-item fees, which are transaction-based.">ⓘ</span></div>
+          <div class="stat-value" id="r-fixedFees">—</div>
+          <div class="stat-sub">recurring monthly charges only</div>
+        </div>
+        <div class="stat-box highlight">
+          <div class="stat-label">Total Monthly Cost</div>
+          <div class="stat-value lead" id="r-totalCost">—</div>
+          <div class="stat-sub" id="r-annualCost">annualized: —</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Effective Rate</div>
+          <div class="stat-value" id="r-effectiveRate">—</div>
+          <div class="stat-sub">total cost ÷ volume</div>
+        </div>
+        <div class="stat-box" title="What portion of total fees are fixed monthly charges vs interchange. A high burden % means fixed fees weigh heavily on the merchant, typically a sign of low processing volume relative to fixed costs. Strong talking point for rate review.">
+          <div class="stat-label">Fixed Fee Burden <span class="i">ⓘ</span></div>
+          <div class="stat-value" id="r-burden">—</div>
+          <div class="stat-sub">monthly fees as % of total cost</div>
+        </div>
+        <div class="stat-box savings">
+          <div class="stat-label">Post-Compliance Savings</div>
+          <div class="stat-value green" id="r-savings">—</div>
+          <div class="stat-sub" id="r-savingsAnnual">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="card">
+        <div class="card-label"><span class="dot"></span>Fee Line Items</div>
+        <table class="fee-table"><colgroup><col><col style="width:108px"></colgroup><tbody id="feeTableBody"></tbody></table>
+      </div>
+      <div class="card">
+        <div class="card-label"><span class="dot"></span>Scenario Comparison</div>
+        <div class="sc-cap">Current (non-compliant)</div>
+        <div class="scenario">
+          <div class="scenario-total" id="sc-current">—</div>
+          <div class="scenario-rate" id="sc-currentRate">effective rate: —</div>
+        </div>
+        <div class="sep-label">after compliance</div>
+        <div class="sc-cap" style="color:var(--grn);">Compliant (non-compliance fee removed)</div>
+        <div class="scenario compliant">
+          <div class="scenario-total" id="sc-compliant">—</div>
+          <div class="scenario-rate" id="sc-compliantRate">effective rate: —</div>
+        </div>
+        <div class="info-note">
+          <span class="icon">ℹ</span>
+          <span>Further savings <em>potentially</em> possible via <strong>L2/L3 data processing</strong>: submitting enhanced transaction data (invoice #, tax amount, customer code) may qualify transactions for lower interchange categories, especially on B2B card types. <strong>Important:</strong> processing levels are determined by the Issuer and Card Network, not the processor. Qualifying transactions will automatically receive the lower rate, but not all transactions are guaranteed to qualify. <strong>Flag for rate review</strong> once compliant to explore this opportunity.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="trendSection" style="margin-top:20px;display:none;">
+    <div class="card full">
+      <div class="trend-head">
+        <div class="card-label" style="margin-bottom:0;"><span class="dot"></span>Monthly Fee Trend</div>
+        <button onclick="clearTrend()" id="btnClearTrend" class="mini no-print">Clear Trend</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table id="trendTable">
+          <thead><tr><th>Month</th><th>Volume</th><th>Total Fees</th><th>Eff. Rate</th><th>Fixed</th><th>Interchange</th><th>vs Prior</th><th class="no-print"></th></tr></thead>
+          <tbody id="trendBody"></tbody>
+        </table>
+      </div>
+      <div class="chart-well"><canvas id="trendChart"></canvas></div>
+    </div>
+  </div>
+
+  <div id="emptyState" style="margin-top:20px;">
+    <div class="card full">
+      <div class="empty-state">
+        Enter merchant details and processing volume above,<br>then hit <strong>Calculate Breakdown</strong> to generate the full analysis.<br>New here? <strong>Load demo data</strong> fills four fictional months.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* ============ 1 · SETUP: the screen reads the DB ============ */
+  const $ = (id) => document.getElementById(id);
+  const feeStates = { accelFunding:true, pciMgmt:true, nonCompliance:true, customFee:false, fullSettlement:false };
+  let trendData = [];
+  let editingIndex = -1; // -1 = new month, >=0 = editing a saved one
+
+  function fillFromDb() {
+    $('headerTag').textContent = `${DB.company} · Account Management Tools`;
+    document.querySelectorAll('.team-name').forEach((e) => (e.textContent = `${DB.company} ${DB.team}`));
+    document.querySelectorAll('.portal-name').forEach((e) => (e.textContent = DB.portal));
+    $('ratesHelp').title = `These rates are fixed and can be verified in ${DB.portal} under the merchant's pricing schedule. They do not vary month to month.`;
+    $('ncDesc').textContent = `After ${DB.graceDays}-day grace period · removable post-compliance`;
+    $('fsDesc').textContent = `Daily gross, fees debited monthly · ${DB.fees.fullSettlementPct}% of volume`;
+    $('nc-tier-low').textContent = '$' + DB.fees.ncLow.toFixed(2);
+    $('nc-tier-high').textContent = '$' + DB.fees.ncHigh.toFixed(2);
+    $('accelFunding').value = DB.fees.accelFunding.toFixed(2);
+    $('pciMgmt').value = DB.fees.pciMgmt.toFixed(2);
+    $('nonCompliance').value = DB.fees.ncLow.toFixed(2);
+  }
+
+  /* ============ 2 · SMALL HELPERS ============ */
+  function fmt(n, d = 2) { if (isNaN(n) || n === null) return '—'; return '$' + n.toFixed(d).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function fmtPct(n, d = 3) { if (isNaN(n) || n === null) return '—'; return n.toFixed(d) + '%'; }
+  function v(id) { return parseFloat($(id).value) || 0; }
+  function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  let msgTimer = null;
+  function say(text) {
+    const m = $('msg'); m.textContent = text; m.style.display = 'block';
+    clearTimeout(msgTimer); msgTimer = setTimeout(() => (m.style.display = 'none'), 5000);
+  }
+  function merchantTitle() {
+    const id = $('accountId').value.trim();
+    const name = $('merchantName').value.trim();
+    return { id, name, title: id ? `${name || 'Merchant'} · ${DB.idLabel} ${id}` : name || 'Merchant' };
+  }
+
+  /* ============ 3 · THE FEE SWITCHES ============ */
+  function setToggle(id, on) {
+    feeStates[id] = on;
+    $('toggle-' + id).classList.toggle('active', on);
+  }
+  function toggleFee(id) { setToggle(id, !feeStates[id]); }
+  function setNcTier(which) {
+    $('nonCompliance').value = (which === 'high' ? DB.fees.ncHigh : DB.fees.ncLow).toFixed(2);
+    $('nc-tier-low').classList.toggle('active-tier', which !== 'high');
+    $('nc-tier-high').classList.toggle('active-tier', which === 'high');
+  }
+
+  /* ============ 4 · THE MATH (one place, used by Calculate and Save Month) ============ */
+  function readMonth() {
+    const volume = v('volume'), txCount = v('txCount'), total = v('totalFees'), perItem = v('perItem');
+    // fixed fees are COMPONENTS of the total, not added on top of it
+    const accelAmt = feeStates.accelFunding ? v('accelFunding') : 0;
+    const pciMgmtAmt = feeStates.pciMgmt ? v('pciMgmt') : 0;
+    const ncAmt = feeStates.nonCompliance ? v('nonCompliance') : 0;
+    const custAmt = feeStates.customFee ? v('customFee') : 0;
+    const fullSettleAmt = feeStates.fullSettlement ? volume * (DB.fees.fullSettlementPct / 100) : 0;
+    const processorAmt = volume * (v('processorFee') / 100);
+    const piAmt = txCount * perItem;
+    const piSubtracted = DB.PER_ITEM_MODE === 'subtract' ? piAmt : 0;
+    const totalFixed = accelAmt + pciMgmtAmt + ncAmt + custAmt + processorAmt + fullSettleAmt;
+    // monthly components = fixed recurring only (no processor %, no per-item)
+    const monthlyComponents = accelAmt + pciMgmtAmt + ncAmt + custAmt + fullSettleAmt;
+    // interchange = whatever remains after all known components
+    const interchange = Math.max(0, total - totalFixed - piSubtracted);
+    const effRate = volume > 0 ? (total / volume) * 100 : 0;
+    return { volume, txCount, total, perItem, accelAmt, pciMgmtAmt, ncAmt, custAmt, fullSettleAmt, processorAmt, piAmt, totalFixed, monthlyComponents, interchange, effRate };
+  }
+
+  function addCatRow(tb, label) { const tr = document.createElement('tr'); tr.className = 'fee-cat'; tr.innerHTML = `<td colspan="2">${label}</td>`; tb.appendChild(tr); }
+  function addFeeRow(tb, label, amt) { if (amt === 0) return; const tr = document.createElement('tr'); tr.innerHTML = `<td>${label}</td><td>${fmt(amt)}</td>`; tb.appendChild(tr); }
+
+  function calculate() {
+    const m = readMonth();
+    if (m.total === 0 || m.volume === 0) {
+      const missing = m.total === 0 && m.volume === 0 ? 'Processing Volume and Total Fees' : m.total === 0 ? 'Total Fees' : 'Processing Volume';
+      say(`Please enter ${missing} before calculating.`);
+      return false;
+    }
+    $('fullSettlementDisplay').textContent = feeStates.fullSettlement ? fmt(m.fullSettleAmt) : fmt(0);
+
+    const compliantTotal = Math.max(0, m.total - m.ncAmt);
+    const compliantRate = (compliantTotal / m.volume) * 100;
+    const burden = (m.monthlyComponents / m.total) * 100;
+    const subtract = DB.PER_ITEM_MODE === 'subtract';
+
+    $('r-processingCost').textContent = fmt(m.interchange);
+    $('r-interchangeSub').textContent = m.piAmt > 0 && !subtract
+      ? `includes ${fmt(m.piAmt)} of per-item fees`
+      : 'total minus all known components';
+    $('r-fixedFees').textContent = fmt(m.monthlyComponents);
+    $('r-totalCost').textContent = fmt(m.total);
+    $('r-annualCost').textContent = 'annualized: ' + fmt(m.total * 12);
+    $('r-effectiveRate').textContent = fmtPct(m.effRate);
+    $('r-burden').textContent = burden.toFixed(1) + '%';
+    $('r-savings').textContent = fmt(m.ncAmt) + '/mo';
+    $('r-savingsAnnual').textContent = m.ncAmt > 0 ? fmt(m.ncAmt * 12) + ' annually post-compliance' : 'no non-compliance fee active';
+    $('sc-current').textContent = fmt(m.total) + '/mo';
+    $('sc-currentRate').textContent = 'effective rate: ' + fmtPct(m.effRate);
+    $('sc-compliant').textContent = fmt(compliantTotal) + '/mo';
+    $('sc-compliantRate').textContent = 'effective rate: ' + fmtPct(compliantRate);
+    const mt = merchantTitle();
+    $('resultMerchant').textContent = mt.id ? `${mt.name || 'Unnamed Merchant'} · ${DB.idLabel} ${mt.id}` : mt.name || 'Unnamed Merchant';
+
+    const tb = $('feeTableBody'); tb.innerHTML = '';
+    addCatRow(tb, 'Total Fees Breakdown (all included in total)');
+    addFeeRow(tb, '↳ Interchange (transactional + non-transactional)', m.interchange);
+    if (subtract && m.piAmt > 0) addFeeRow(tb, `↳ Per-item fees (${fmt(m.perItem)}/tx × ${m.txCount.toLocaleString()})`, m.piAmt);
+    addFeeRow(tb, `↳ Processor Fee (${v('processorFee').toFixed(3)}% × ${fmt(m.volume)})`, m.processorAmt);
+    addFeeRow(tb, '↳ Accelerated Monthly Fee', m.accelAmt);
+    addFeeRow(tb, '↳ PCI Management Fee', m.pciMgmtAmt);
+    addFeeRow(tb, '↳ PCI Non-Compliance Fee ⚠', m.ncAmt);
+    addFeeRow(tb, `↳ Full Settlement Fee (${DB.fees.fullSettlementPct}% × ${fmt(m.volume)})`, m.fullSettleAmt);
+    addFeeRow(tb, `↳ ${esc($('customFeeLabel').value.trim() || 'Custom Fee')}`, m.custAmt);
+    if (!subtract && m.piAmt > 0) {
+      addCatRow(tb, 'Per-item fee (already inside Interchange)');
+      addFeeRow(tb, `Per-item avg (${fmt(m.perItem)}/tx × ${m.txCount.toLocaleString()})`, m.piAmt);
+    }
+    const tot = document.createElement('tr'); tot.className = 'total-row';
+    tot.innerHTML = `<td>TOTAL MONTHLY COST</td><td>${fmt(m.total)}</td>`; tb.appendChild(tot);
+
+    $('emptyState').style.display = 'none';
+    $('results').style.display = 'block';
+    $('msg').style.display = 'none';
+    return true;
+  }
+
+  /* ============ 5 · SAVED MONTHS ============ */
+  function setSaveButton(editing) {
+    const btn = $('btnSaveMonth');
+    btn.textContent = editing ? '✎ Update Month' : '+ Save Month';
+    btn.classList.toggle('editing', editing);
+  }
+
+  function saveMonth() {
+    const m = readMonth();
+    if (m.total === 0) { say('Please calculate a breakdown first before saving a month.'); return; }
+    const monthVal = $('monthLabel').value.trim();
+    const yearVal = $('yearLabel').value;
+    const entry = {
+      month: monthVal ? `${monthVal} ${yearVal}` : `Month ${trendData.length + 1} ${yearVal}`,
+      volume: m.volume, total: m.total, effRate: m.effRate, totalFixed: m.totalFixed, interchange: m.interchange, txCount: m.txCount,
+      processorFee: v('processorFee'), perItem: m.perItem,
+      accelFunding: v('accelFunding'), accelOn: feeStates.accelFunding,
+      pciMgmt: v('pciMgmt'), pciOn: feeStates.pciMgmt,
+      nonCompliance: v('nonCompliance'), ncOn: feeStates.nonCompliance,
+      customFee: v('customFee'), custOn: feeStates.customFee,
+      customFeeLabel: $('customFeeLabel').value.trim(),
+      fullSettleOn: feeStates.fullSettlement,
+    };
+    if (editingIndex >= 0) { trendData[editingIndex] = entry; editingIndex = -1; }
+    else trendData.push(entry);
+    setSaveButton(false);
+    $('trendSection').style.display = 'block';
+    renderTrend();
+    // clear the fields that change month to month
+    ['volume', 'txCount', 'monthLabel', 'totalFees'].forEach((id) => ($(id).value = ''));
+    $('results').style.display = 'none';
+    $('emptyState').style.display = 'block';
+  }
+
+  function loadMonth(i) {
+    const d = trendData[i];
+    editingIndex = i;
+    const parts = d.month.split(' ');
+    $('monthLabel').value = parts.slice(0, -1).join(' ');
+    $('yearLabel').value = parts[parts.length - 1];
+    $('volume').value = d.volume; $('txCount').value = d.txCount; $('totalFees').value = d.total;
+    $('processorFee').value = d.processorFee; $('perItem').value = d.perItem;
+    ['accelFunding', 'pciMgmt', 'nonCompliance', 'customFee'].forEach((id) => ($(id).value = d[id].toFixed(2)));
+    $('customFeeLabel').value = d.customFeeLabel || 'Custom Monthly Fee';
+    setToggle('accelFunding', d.accelOn); setToggle('pciMgmt', d.pciOn); setToggle('nonCompliance', d.ncOn);
+    setToggle('customFee', d.custOn); setToggle('fullSettlement', d.fullSettleOn || false);
+    setSaveButton(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    calculate();
+  }
+
+  function renderTrend() {
+    const tb = $('trendBody'); tb.innerHTML = '';
+    trendData.forEach((d, i) => {
+      const prior = i > 0 ? trendData[i - 1] : null;
+      let trendCell = '<td>—</td>';
+      if (prior) {
+        const rateDiff = d.effRate - prior.effRate, feeDiff = d.total - prior.total;
+        const same = Math.abs(rateDiff) < 0.001, up = rateDiff > 0;
+        const col = same ? 'var(--mute)' : up ? '#ff8fa6' : 'var(--grn)';
+        const txt = same ? '→ no change' : `${up ? '▲' : '▼'} ${feeDiff >= 0 ? '+' : ''}${feeDiff.toFixed(2)} (${up ? '+' : ''}${rateDiff.toFixed(3)}%)`;
+        trendCell = `<td style="color:${col};font-weight:700;">${txt}</td>`;
+      }
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="m" onclick="loadMonth(${i})" title="Click to load this month">${esc(d.month)}</td>
+        <td>${fmt(d.volume)}</td><td class="strong">${fmt(d.total)}</td><td class="strong">${fmtPct(d.effRate)}</td>
+        <td>${fmt(d.totalFixed)}</td><td>${fmt(d.interchange)}</td>${trendCell}
+        <td class="no-print" style="text-align:center;"><button class="mini" onclick="removeMonth(${i})" aria-label="Remove ${esc(d.month)}">✕</button></td>`;
+      tb.appendChild(tr);
+    });
+    renderChart();
+  }
+  function removeMonth(i) {
+    trendData.splice(i, 1);
+    if (editingIndex === i) { editingIndex = -1; setSaveButton(false); }
+    if (trendData.length === 0) { $('trendSection').style.display = 'none'; return; }
+    renderTrend();
+  }
+  function clearTrend() { trendData = []; editingIndex = -1; setSaveButton(false); $('trendSection').style.display = 'none'; }
+
+  /* ============ 6 · THE TREND CHART ============ */
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  function chronological(list) {
+    const key = (d) => { const p = d.month.split(' '); return parseInt(p[p.length - 1]) * 12 + Math.max(0, MONTHS.indexOf(p.slice(0, -1).join(' '))); };
+    return [...list].sort((a, b) => key(a) - key(b));
+  }
+  // on paper the same chart is drawn in ink colours
+  const printQuery = window.matchMedia('print');
+  let paper = printQuery.matches;
+  function setPaper(on) { paper = on; renderChart(); }
+  function renderChart() {
+    const canvas = $('trendChart');
+    if (!canvas || trendData.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.parentElement.clientWidth - 12 || 800, H = 256;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const FONT = '10px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace';
+    const C = paper
+      ? { inter:'#7fb6dc', fixed:'#1d5f8a', best:'#3d7412', worst:'#c0392b', mid:'#a66a00', text:'#333', grid:'#d5dbe2', back:'#fff', ring:'#fff' }
+      : { inter:'rgba(143,214,255,0.8)', fixed:'rgba(74,118,160,0.95)', best:'#b6ff3c', worst:'#ff6f8c', mid:'#ffc46b', text:'#b3c5d6', grid:'rgba(28,58,79,0.9)', back:'rgba(4,7,11,0.85)', ring:'#04070b' };
+    const narrow = W < 520;
+    const PAD = { top: narrow ? 72 : 34, right: narrow ? 50 : 64, bottom:34, left: narrow ? 46 : 60 };
+    const cW = W - PAD.left - PAD.right, cH = H - PAD.top - PAD.bottom;
+    const data = chronological(trendData), n = data.length;
+    // the bars stay in the lower part of the well so the rate line and its labels have their own room above
+    const maxFee = Math.max(...data.map((d) => d.total)) * 1.5 || 1;
+    const maxRate = Math.max(...data.map((d) => d.effRate)) * 1.2 || 1;
+    const gap = cW / n, barW = Math.min(60, gap * 0.55);
+
+    ctx.font = FONT; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = PAD.top + cH - (i / 4) * cH;
+      ctx.strokeStyle = C.grid; ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + cW, y); ctx.stroke();
+      ctx.fillStyle = C.text; ctx.textAlign = 'right'; ctx.fillText('$' + ((maxFee * i) / 4).toFixed(0), PAD.left - 8, y + 4);
+      ctx.textAlign = 'left'; ctx.fillText(((maxRate * i) / 4).toFixed(2) + '%', PAD.left + cW + 8, y + 4);
+    }
+    const pts = [];
+    data.forEach((d, i) => {
+      const x = PAD.left + i * gap + gap / 2 - barW / 2, baseY = PAD.top + cH;
+      // the bar is the whole month: interchange at the bottom, everything else stacked on top
+      const intH = (d.interchange / maxFee) * cH, restH = ((d.total - d.interchange) / maxFee) * cH;
+      ctx.fillStyle = C.inter; ctx.fillRect(x, baseY - intH, barW, intH);
+      ctx.fillStyle = C.fixed; ctx.fillRect(x, baseY - intH - restH, barW, restH);
+      ctx.fillStyle = C.text; ctx.textAlign = 'center';
+      // when the months sit close together the name is shortened: "Sep '26"
+      const p = d.month.split(' ');
+      const short = gap < 96 ? `${p[0].slice(0, 3)} '${p[p.length - 1].slice(-2)}` : d.month.length > 14 ? d.month.substring(0, 13) + '…' : d.month;
+      ctx.fillText(short, PAD.left + i * gap + gap / 2, H - 12);
+      pts.push([PAD.left + i * gap + gap / 2, PAD.top + cH - (d.effRate / maxRate) * cH]);
+    });
+    const minRate = Math.min(...data.map((d) => d.effRate)), topRate = Math.max(...data.map((d) => d.effRate));
+    const dotCol = (r) => (Math.abs(r - minRate) < 0.001 ? C.best : Math.abs(r - topRate) < 0.001 ? C.worst : C.mid);
+    for (let i = 1; i < pts.length; i++) {
+      const diff = data[i].effRate - data[i - 1].effRate;
+      ctx.strokeStyle = Math.abs(diff) < 0.001 ? '#8298ad' : diff > 0 ? C.worst : C.best;
+      ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+      ctx.beginPath(); ctx.moveTo(pts[i - 1][0], pts[i - 1][1]); ctx.lineTo(pts[i][0], pts[i][1]); ctx.stroke();
+    }
+    pts.forEach(([x, y], i) => {
+      const col = dotCol(data[i].effRate);
+      ctx.fillStyle = C.ring; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.font = 'bold ' + FONT; ctx.textAlign = 'center';
+      const label = data[i].effRate.toFixed(2) + '%', tw = ctx.measureText(label).width;
+      ctx.fillStyle = C.back; ctx.fillRect(x - tw / 2 - 3, y - 24, tw + 6, 14);
+      ctx.fillStyle = col; ctx.fillText(label, x, y - 13);
+    });
+    // legend, measured so nothing gets cut
+    ctx.font = FONT; ctx.textAlign = 'left';
+    let ox = PAD.left, oy = 10;
+    [['Interchange', C.inter], ['Fixed + per-transaction', C.fixed], ['Rate: best', C.best], ['Rate: mid', C.mid], ['Rate: worst', C.worst]].forEach(([label, col]) => {
+      const w = 15 + ctx.measureText(label).width + 18;
+      if (ox + w - 18 > W - 6) { ox = PAD.left; oy += 16; } // no room left on this line: start the next one
+      ctx.fillStyle = col; ctx.fillRect(ox, oy, 10, 10);
+      ctx.fillStyle = C.text; ctx.fillText(label, ox + 15, oy + 9);
+      ox += w;
+    });
+  }
+
+  /* ============ 7 · EXPORTS ============ */
+  // the name a saved export gets: business name + what it is + today's date,
+  // e.g. "Harbor Street Bakery - Fee Breakdown PDF - 2026-11-16"
+  function exportName(kind) {
+    const { id, name } = merchantTitle();
+    // the business name is the part before " · MID ..."; without one, the Account ID stands in
+    const business = (name.split('·')[0].trim() || id || 'Merchant').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const d = new Date(), two = (n) => String(n).padStart(2, '0');
+    return `${business} - ${kind} - ${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+  }
+  function printWithName() {
+    const original = document.title;
+    document.title = exportName('Fee Breakdown PDF'); // the browser offers the page title as the file name
+    window.print();
+    document.title = original;
+  }
+
+  function buildDetailedHtml() {
+    const { id, name, title } = merchantTitle();
+    const mName = esc(name || 'Merchant');
+    const fmtP = (n) => n.toFixed(3) + '%';
+    const A = '#1d5f8a';
+    const n = trendData.length, s = n > 1 ? 's' : '';
+    const sum = (f) => trendData.reduce((t, d) => t + f(d), 0);
+    const low = trendData.reduce((a, d) => (d.effRate < a.effRate ? d : a)), high = trendData.reduce((a, d) => (d.effRate > a.effRate ? d : a));
+    const cat = (t) => `<tr><td colspan="2" style="padding:10px 0 4px;font-size:9px;letter-spacing:0.15em;text-transform:uppercase;color:${A};font-weight:700;border-bottom:1px solid #eee;">${t}</td></tr>`;
+    const row = (l, val, bold) => `<tr><td style="padding:5px 0;color:#555;width:60%;">${l}</td><td style="text-align:right;${bold ? 'font-weight:700;' : ''}">${val}</td></tr>`;
+    const sub = (l, val, col) => `<tr><td style="padding:4px 0 4px 16px;color:${col || '#777'};font-size:11px;">↳ ${l}</td><td style="text-align:right;font-size:11px;color:${col || 'inherit'};">${val}</td></tr>`;
+
+    const rows = trendData.map((d, i) => {
+      const prior = i > 0 ? trendData[i - 1] : null;
+      const feeDiff = prior ? d.total - prior.total : null, rateDiff = prior ? d.effRate - prior.effRate : null;
+      // from the merchant's side: rate up = bad (red), rate down = good (green)
+      const rateColor = rateDiff === null ? '#999' : rateDiff > 0 ? '#c0392b' : rateDiff < 0 ? '#3d7412' : '#999';
+      const arrow = rateDiff === null ? '' : rateDiff > 0 ? '▲ ' : rateDiff < 0 ? '▼ ' : '→ ';
+      const vs = feeDiff !== null ? `${arrow}${feeDiff >= 0 ? '+' : '-'}${fmt(Math.abs(feeDiff))} (${rateDiff >= 0 ? '+' : ''}${fmtP(rateDiff)})` : '—';
+      const processorAmt = d.volume * (d.processorFee / 100), piAmt = d.txCount * d.perItem;
+      const fsAmt = d.fullSettleOn ? d.volume * (DB.fees.fullSettlementPct / 100) : 0;
+      return `
+        <div style="page-break-inside:avoid;border:1px solid #ddd;border-radius:8px;padding:20px;">
+          <div style="font-family:monospace;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:${A};margin-bottom:6px;border-bottom:2px solid ${A};padding-bottom:8px;font-weight:700;">${esc(d.month)}</div>
+          <table style="width:100%;border-collapse:collapse;font-family:monospace;font-size:12px;">
+            ${cat('Processing')}
+            ${row('Monthly Volume', fmt(d.volume), true)}
+            ${d.txCount > 0 ? row('Transaction Count', d.txCount.toLocaleString()) : ''}
+            ${cat('Variable Fees')}
+            ${row('Interchange (transactional + non-transactional)', fmt(d.interchange), true)}
+            ${processorAmt > 0 ? row(`Processor Fee (${fmtP(d.processorFee)} × ${fmt(d.volume)})`, fmt(processorAmt)) : ''}
+            ${piAmt > 0 ? (DB.PER_ITEM_MODE === 'subtract' ? row : sub)(`Per-item fees (${fmt(d.perItem)}/tx × ${d.txCount.toLocaleString()})`, fmt(piAmt)) : ''}
+            ${cat('Fixed Fees')}
+            ${row('Total Fixed Components', fmt(d.totalFixed), true)}
+            ${d.accelOn ? sub('Accelerated Monthly Fee', fmt(d.accelFunding)) : ''}
+            ${d.pciOn ? sub('PCI Management Fee', fmt(d.pciMgmt)) : ''}
+            ${d.ncOn ? sub('PCI Non-Compliance Fee', fmt(d.nonCompliance), '#c0392b') : ''}
+            ${fsAmt > 0 ? sub('Full Settlement Fee', fmt(fsAmt)) : ''}
+            ${d.custOn && d.customFee > 0 ? sub(esc(d.customFeeLabel || 'Custom Fee'), fmt(d.customFee)) : ''}
+            ${cat('Summary')}
+            <tr><td style="padding:6px 0;color:#111;font-weight:700;font-size:13px;">Total Monthly Fees</td><td style="text-align:right;font-weight:700;color:${A};font-size:14px;">${fmt(d.total)}</td></tr>
+            ${row('Effective Rate', fmtP(d.effRate), true)}
+            <tr><td style="padding:5px 0;color:#555;">vs Prior Month</td><td style="text-align:right;font-weight:700;color:${rateColor};">${vs}</td></tr>
+          </table>
+        </div>`;
+    }).join('');
+
+    const big = (label, val, note, col) => `<div style="text-align:center;"><div style="font-family:monospace;font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:#777;margin-bottom:6px;">${label}</div><div style="font-family:monospace;font-size:24px;font-weight:700;color:${col || '#111'};">${val}</div><div style="font-family:monospace;font-size:10px;color:#999;margin-top:4px;">${note}</div></div>`;
+    const small = (label, val, note, col) => `<div style="text-align:center;"><div style="font-family:monospace;font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:#777;margin-bottom:4px;">${label}</div><div style="font-family:monospace;font-size:14px;font-weight:700;color:${col};">${val} <span style="font-size:10px;font-weight:400;color:#888;">${note}</span></div></div>`;
+
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${esc(exportName('Detailed Export'))}</title>
+      <style>
+        body{font-family:system-ui,sans-serif;max-width:860px;margin:0 auto;padding:40px 24px;color:#111;}
+        h1{font-size:28px;font-weight:800;margin-bottom:4px;}
+        .sub{font-family:monospace;font-size:11px;color:#777;letter-spacing:0.1em;margin-bottom:8px;}
+        .legend{display:flex;gap:20px;font-family:monospace;font-size:11px;margin-bottom:24px;}
+        .dot{width:10px;height:10px;border-radius:50%;display:inline-block;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+        .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+        .three{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+        @media print{.no-print{display:none;}@page{margin:18mm;}}
+      </style></head><body>
+      <h1>Fee Breakdown · <span style="color:${A};">${mName}</span></h1>
+      <div class="sub">${id ? `${DB.idLabel}: ${esc(id)} · ` : ''}${n} month${s} · Generated ${new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' })}</div>
+      <div class="legend"><span><span class="dot" style="background:#3d7412;"></span> Rate decreased</span><span><span class="dot" style="background:#c0392b;"></span> Rate increased</span></div>
+      <button class="no-print" onclick="window.print()" style="margin-bottom:24px;padding:10px 20px;background:${A};color:white;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;">⬇ Save as PDF</button>
+      <div style="border:2px solid ${A};border-radius:8px;padding:16px 20px;margin-bottom:24px;background:#eef5fa;">
+        <div style="font-size:10px;font-family:monospace;letter-spacing:0.15em;text-transform:uppercase;color:${A};font-weight:700;margin-bottom:10px;">Important Notice</div>
+        <ul style="margin:0;padding-left:18px;font-size:12px;color:#333;line-height:1.9;">
+          <li><strong>This is not an official or binding document.</strong> All information provided herein is strictly informational and does not constitute a formal agreement or commitment of any kind.</li>
+          <li><strong>All figures are averages and estimates, not precise calculations.</strong> Card brands, card types, and network categories have been grouped under blended averages. Each individual transaction may vary depending on card type, issuer, and applicable interchange category.</li>
+          <li><strong>Pricing varies month to month</strong> due to the aforementioned reasons, including changes in card mix, transaction volume, and applicable interchange categories.</li>
+          <li><strong>For official confirmation, please contact the ${DB.company} ${DB.team}.</strong> Any rate decrease resulting from a Rate Review request must be confirmed and approved by the ${DB.company} ${DB.team} before taking effect.</li>
+        </ul>
+      </div>
+      <div style="border:2px solid ${A};border-radius:10px;padding:20px 24px;margin-bottom:28px;background:#eef5fa;page-break-inside:avoid;">
+        <div style="font-family:monospace;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:${A};font-weight:700;margin-bottom:16px;">Average Effective Processing Rate Summary</div>
+        <div class="three" style="margin-bottom:16px;">
+          ${big('Avg Effective Rate', (sum((d) => d.effRate) / n).toFixed(3) + '%', `across ${n} month${s}`, A)}
+          ${big('Avg Monthly Fees', fmt(sum((d) => d.total) / n), 'total fees / month')}
+          ${big('Total Volume', fmt(sum((d) => d.volume)), 'across all months')}
+        </div>
+        <div class="three" style="border-top:1px solid #cfdde8;padding-top:14px;">
+          ${small('Lowest Rate', low.effRate.toFixed(3) + '%', `(${esc(low.month)})`, '#3d7412')}
+          ${small('Highest Rate', high.effRate.toFixed(3) + '%', `(${esc(high.month)})`, '#c0392b')}
+          ${small('Total Fees Paid', fmt(sum((d) => d.total)), '', A)}
+        </div>
+      </div>
+      <div class="grid">${rows}</div>
+    </body></html>`;
+  }
+
+  function exportDetailed() {
+    if (trendData.length === 0) { say('No months saved yet. Save at least one month first.'); return; }
+    const html = buildDetailedHtml();
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); return; }
+    // a pop-up blocker is in the way: hand the report over as a file instead
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    a.download = exportName('Detailed Export') + '.html';
+    a.click();
+    say('Your browser blocked the new tab, so the detailed export was downloaded as a file.');
+  }
+
+  /* ============ 8 · RESET AND DEMO DATA ============ */
+  function resetAll() {
+    ['merchantName', 'accountId', 'notes', 'volume', 'txCount', 'monthLabel', 'totalFees', 'processorFee', 'perItem'].forEach((id) => ($(id).value = ''));
+    $('yearLabel').value = new Date().getFullYear();
+    fillFromDb(); setNcTier('low');
+    $('customFeeLabel').value = 'Custom Monthly Fee'; $('customFee').value = '0.00';
+    setToggle('accelFunding', true); setToggle('pciMgmt', true); setToggle('nonCompliance', true);
+    setToggle('customFee', false); setToggle('fullSettlement', false);
+    $('fullSettlementDisplay').textContent = '—';
+    editingIndex = -1; setSaveButton(false);
+    $('results').style.display = 'none'; $('emptyState').style.display = 'block';
+  }
+
+  // four fictional months for a fictional bakery, so the tool can be shown without typing
+  function loadDemo() {
+    resetAll(); clearTrend();
+    $('merchantName').value = 'Harbor Street Bakery · MID 482017';
+    $('accountId').value = 'harborbakery';
+    $('notes').value = 'Non-compliant since March, PCI questionnaire resent 03/14.';
+    $('processorFee').value = '0.15'; $('perItem').value = '0.10'; $('yearLabel').value = '2026';
+    [['June', 18400, 612, 548.2], ['July', 21750, 698, 631.45], ['August', 16900, 571, 529.9]].forEach(([mo, vol, tx, tot]) => {
+      $('monthLabel').value = mo; $('volume').value = vol; $('txCount').value = tx; $('totalFees').value = tot;
+      saveMonth();
+    });
+    $('monthLabel').value = 'September'; $('volume').value = 19850; $('txCount').value = 640; $('totalFees').value = 574.3;
+    calculate();
+  }
+
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA' && e.target.tagName !== 'BUTTON') calculate(); });
+  window.addEventListener('resize', renderChart);
+  window.addEventListener('beforeprint', () => setPaper(true));
+  window.addEventListener('afterprint', () => setPaper(false));
+  printQuery.addEventListener('change', (e) => setPaper(e.matches));
+  fillFromDb();
+  $('yearLabel').value = new Date().getFullYear();
+</script>
+</body>
+</html>
